@@ -1,0 +1,130 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Filippo Ciceri"
+date: "5/1/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+set.seed(2111)
+```
+
+## Aim
+
+Predict the type of movements performed on the basis of the signals provided by accelerometers on the belt, forearm, arm, and dumbell of 6 participants.
+
+## Data processing
+
+The training dataset was generated removing columns corresponding to descriptive statistics (mean, standard deviation, max, min, kurtosis, etc) and other irrelevant information (X, timestamps, windows). Including such details could results in lowering the accuracy of the predictions derived from the dataset.
+
+```{r}
+training <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+training2 <- training[,-grep('kurtosis|skewness|max|min|avg|var|stddev|total|amplitude', names(training))]
+training2 <- training2[,-grep('X|user_name|timestamp|window', names(training))]
+#names(training2)
+```
+
+The training dataset was then scaled and centered so that each column is having mean = 0 and stdev = 1.
+
+````{r}
+preproc <- preProcess(training2[,-49], method=c("center","scale"))
+training_preproc <- predict(preproc,training2)
+apply(training_preproc[,-49], FUN=mean, MARGIN=2)[1:5]
+apply(training_preproc[,-49], FUN=sd, MARGIN=2)[1:5]
+```
+
+## Model selecgtion
+
+As we are trying to classify qualitative variables (instead of predicting quantitative values) the machine learning approach is based on classification threes.
+
+The simplest model provide a rather low accuracy. Accuracy was estimated from the training dataset using crossvalidation with k=10 (size of each sample approximately equal to 17660).
+
+```{r}
+model <- train(classe ~ ., 
+               method="rpart", 
+               data=training_preproc,
+               trControl = trainControl(method="cv", number=10))
+model
+```
+
+The accuracy is around 51%. Sensitivity/specificity for predictions on the training dataset is good only for class E. For the other classes the results are less than desirable.
+
+````{r}
+predictions <- predict(model, training_preproc[,-49])
+confusionMatrix(table(training$classe,predictions))
+```
+
+Before training more complex models, the training dataset was simplified by PCA to reduce the numbers of factors from 49 to 10.
+
+```{r}
+preproc_PCA <- prcomp(training2[,-49],rank=10)
+summary(preproc_PCA)
+training_PCA <- data.frame(preproc_PCA$x)
+training_PCA <- cbind(training2[,49],training_PCA)
+names(training_PCA)[1] <- 'classe'
+```
+
+Ten components explain up to 96% of the variability of the initial training dataset, while simultaneously providing a vey good degree of data compression if we compare the size of `training_preproc` and `training_PCA`.
+
+```{r}
+object.size(training_preproc)
+object.size(training_PCA)
+```
+
+At this point we can train a three-based boosting algorithm, using the same cross-validation settings.
+
+```{r}
+model2 <- train(classe ~ ., 
+               method="gbm", 
+               data=training_PCA,
+               trControl = trainControl(method="cv", number=10),
+               verbose=FALSE)
+model2
+```
+
+The accuracy is better compared to the previous model (73%), as also shown by the confusion matrix below.
+
+```{r}
+predictions <- predict(model2, training_PCA[,-1])
+confusionMatrix(table(training$classe,predictions))
+```
+
+However there are still lots of events not properly classified, so it is time to try a random forest approach with the same cross-validation settings and limiting the number of trees to 100.
+
+```{r}
+model3 <- train(classe ~ ., 
+               method="rf", 
+               data=training_PCA,
+               trControl = trainControl(method="cv", number=10),
+               ntree=100)
+model3
+```
+
+The accuracy is now up to 95%! The predictions peformed on the training dataset have 100% accuracy.
+
+```{r}
+predictions <- predict(model3, training_PCA[,-1])
+table(training$classe,predictions)
+```
+
+Therefore model3 will be used for the final predictions on the testing dataset.
+
+## Predictions
+
+First, the testing dataset is simplified by PCA.
+
+```{r}
+testing <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+testing_PCA <- predict(preproc_PCA, testing)
+```
+
+Predictions are then performed using the random forest model (model3).
+
+```{r}
+final <- predict(model3, testing_PCA)
+final
+```
+
+The results of the Course Project Prediction Quiz show that 1 prediction out of 20 is wrong, in line with the accuracy estimated by cross-validation.
